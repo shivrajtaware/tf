@@ -1,0 +1,463 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus { INVITED ACTIVE DISABLED }
+enum FranchiseStatus { DRAFT REVIEW ACTIVE SUSPENDED CLOSED }
+enum SkuStatus { DRAFT ACTIVE ARCHIVED }
+enum OrderSource { FRANCHISE HQ_ASSISTED RECURRING AI_SUGGESTED }
+enum OrderStatus { DRAFT SUBMITTED UNDER_REVIEW APPROVED ALLOCATED PICKING PACKED DISPATCHED PARTIALLY_DELIVERED DELIVERED CLOSED ON_HOLD CANCELLED }
+enum ProcurementType { PR PO GRN }
+enum ProcurementStatus { DRAFT PENDING APPROVED REJECTED SENT RECEIVING QC_PENDING POSTED CANCELLED }
+enum PaymentStatus { DRAFT POSTED PARTIALLY_PAID PAID OVERDUE REVERSED ADJUSTED }
+enum TicketStatus { OPEN ASSIGNED WAITING RESOLVED CLOSED }
+enum Severity { INFO WARNING NORMAL HIGH CRITICAL }
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  phone        String?
+  name         String
+  passwordHash String
+  status       UserStatus @default(ACTIVE)
+  lastLoginAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  roles        UserRole[]
+  auditEvents  AuditLog[]
+}
+
+model Role {
+  id          String       @id @default(cuid())
+  name        String       @unique
+  description String?
+  userRoles   UserRole[]
+  permissions Permission[]
+}
+
+model UserRole {
+  userId String
+  roleId String
+  scope  Json?
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  @@id([userId, roleId])
+}
+
+model Permission {
+  id      String  @id @default(cuid())
+  roleId  String
+  module  String
+  action  String
+  allowed Boolean @default(false)
+  role    Role    @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  @@unique([roleId, module, action])
+}
+
+model Franchise {
+  id            String          @id
+  name          String
+  owner         String
+  phone         String
+  email         String?
+  city          String
+  region        String
+  address       String
+  warehouseId   String?
+  route         String?
+  status        FranchiseStatus @default(DRAFT)
+  creditLimit   Decimal         @db.Decimal(14,2) @default(0)
+  outstanding   Decimal         @db.Decimal(14,2) @default(0)
+  paymentTerms  String?
+  priceList     String?
+  score         Decimal         @db.Decimal(6,2) @default(0)
+  lastOrderAt   DateTime?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  warehouse     Warehouse?      @relation(fields: [warehouseId], references: [id])
+  orders        Order[]
+  invoices      Invoice[]
+  payments      Payment[]
+  tickets       Ticket[]
+}
+
+model Warehouse {
+  id            String             @id
+  code          String             @unique
+  name          String
+  address       String
+  manager       String
+  capacity      Decimal            @db.Decimal(16,2) @default(0)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  franchises    Franchise[]
+  locations     WarehouseLocation[]
+  lots          InventoryLot[]
+  procurements  Procurement[]
+  trips         DispatchTrip[]
+}
+
+model WarehouseLocation {
+  id          String         @id @default(cuid())
+  warehouseId String
+  code        String
+  zone        String?
+  aisle       String?
+  rack        String?
+  bin         String?
+  warehouse   Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  lots        InventoryLot[]
+  @@unique([warehouseId, code])
+}
+
+model SKU {
+  id              String             @id
+  code            String             @unique
+  name            String
+  category        String
+  uom             String
+  purchasePrice   Decimal            @db.Decimal(14,2) @default(0)
+  transferPrice   Decimal            @db.Decimal(14,2) @default(0)
+  taxRate         Decimal            @db.Decimal(6,2) @default(0)
+  reorderPoint    Decimal            @db.Decimal(16,3) @default(0)
+  safetyStock     Decimal            @db.Decimal(16,3) @default(0)
+  leadTimeDays    Int                @default(0)
+  shelfLifeDays   Int                @default(0)
+  batchTracking   Boolean            @default(false)
+  expiryTracking  Boolean            @default(false)
+  status          SkuStatus          @default(DRAFT)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  lots            InventoryLot[]
+  orderLines      OrderLine[]
+  recipeLines     RecipeLine[]
+  recipes         Recipe[]
+  receiptLines    GoodsReceiptLine[]
+  auditEvents     AuditLog[]
+}
+
+model Supplier {
+  id            String        @id
+  name          String
+  contact       String
+  phone         String
+  email         String?
+  category      String
+  leadDays      Int           @default(0)
+  fillRate      Decimal       @db.Decimal(6,2) @default(0)
+  quality       Decimal       @db.Decimal(6,2) @default(0)
+  status        String        @default("Active")
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  procurements  Procurement[]
+}
+
+model Recipe {
+  id            String       @id @default(cuid())
+  productSkuId  String
+  version       String
+  effectiveFrom DateTime
+  active        Boolean      @default(true)
+  product       SKU          @relation(fields: [productSkuId], references: [id])
+  lines         RecipeLine[]
+  @@unique([productSkuId, version])
+}
+
+model RecipeLine {
+  id        String   @id @default(cuid())
+  recipeId  String
+  skuId     String
+  quantity  Decimal  @db.Decimal(16,3)
+  uom       String
+  recipe    Recipe   @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  sku       SKU      @relation(fields: [skuId], references: [id])
+}
+
+model Procurement {
+  id          String             @id
+  type        ProcurementType
+  subject     String
+  supplierId  String?
+  warehouseId String?
+  qty         String
+  value       Decimal            @db.Decimal(14,2) @default(0)
+  status      ProcurementStatus  @default(DRAFT)
+  requiredBy  DateTime?
+  priority    String?
+  sourceId    String?
+  reason      String?
+  createdById String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  supplier    Supplier?          @relation(fields: [supplierId], references: [id])
+  warehouse   Warehouse?         @relation(fields: [warehouseId], references: [id])
+  receipts    GoodsReceipt[]
+  auditEvents AuditLog[]
+}
+
+model GoodsReceipt {
+  id            String          @id
+  procurementId String
+  receivedAt    DateTime        @default(now())
+  receivedById  String?
+  status        String          @default("QC_PENDING")
+  remarks       String?
+  procurement   Procurement     @relation(fields: [procurementId], references: [id])
+  lines         GoodsReceiptLine[]
+}
+
+model GoodsReceiptLine {
+  id            String        @id @default(cuid())
+  goodsReceiptId String
+  skuId         String
+  orderedQty    Decimal       @db.Decimal(16,3)
+  receivedQty   Decimal       @db.Decimal(16,3)
+  acceptedQty   Decimal       @db.Decimal(16,3) @default(0)
+  rejectedQty   Decimal       @db.Decimal(16,3) @default(0)
+  batch         String?
+  expiry        DateTime?
+  qcState       String        @default("PENDING")
+  goodsReceipt  GoodsReceipt  @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  sku           SKU           @relation(fields: [skuId], references: [id])
+}
+
+model InventoryLot {
+  id          String             @id @default(cuid())
+  skuId       String
+  warehouseId String
+  locationId  String?
+  batch       String?
+  expiry      DateTime?
+  onHand      Decimal            @db.Decimal(16,3) @default(0)
+  reserved    Decimal            @db.Decimal(16,3) @default(0)
+  blocked     Decimal            @db.Decimal(16,3) @default(0)
+  incoming    Decimal            @db.Decimal(16,3) @default(0)
+  cost        Decimal            @db.Decimal(14,2) @default(0)
+  sku         SKU                @relation(fields: [skuId], references: [id])
+  warehouse   Warehouse          @relation(fields: [warehouseId], references: [id])
+  location    WarehouseLocation? @relation(fields: [locationId], references: [id])
+  ledger      InventoryLedger[]
+  @@index([skuId, warehouseId, expiry])
+}
+
+model InventoryLedger {
+  id            String        @id @default(cuid())
+  lotId         String
+  eventType     String
+  quantity      Decimal       @db.Decimal(16,3)
+  beforeQty     Decimal       @db.Decimal(16,3)
+  afterQty      Decimal       @db.Decimal(16,3)
+  referenceType String?
+  referenceId   String?
+  reason        String?
+  actorId       String?
+  createdAt     DateTime      @default(now())
+  lot           InventoryLot  @relation(fields: [lotId], references: [id])
+}
+
+model Order {
+  id                String          @id
+  franchiseId       String
+  source            OrderSource
+  status            OrderStatus      @default(DRAFT)
+  assistanceReason  String?
+  orderDate         DateTime        @default(now())
+  requiredDate      DateTime
+  warehouseId       String?
+  priority          String           @default("Normal")
+  notes             String?
+  createdById       String?
+  createdFor        String?
+  amount            Decimal          @db.Decimal(14,2) @default(0)
+  paymentState      String           @default("Open")
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  franchise         Franchise       @relation(fields: [franchiseId], references: [id])
+  lines             OrderLine[]
+  invoice           Invoice?
+  dispatchStops     DeliveryStop[]
+  auditEvents       AuditLog[]
+  @@index([franchiseId, status, requiredDate])
+}
+
+model OrderLine {
+  id        String   @id @default(cuid())
+  orderId  String
+  skuId     String
+  uom       String
+  qty       Decimal  @db.Decimal(16,3)
+  rate      Decimal  @db.Decimal(14,2)
+  discount  Decimal  @db.Decimal(6,2) @default(0)
+  taxRate   Decimal  @db.Decimal(6,2) @default(0)
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  sku       SKU      @relation(fields: [skuId], references: [id])
+}
+
+model DispatchTrip {
+  id          String          @id
+  date        DateTime
+  route       String
+  warehouseId String?
+  vehicle     String
+  driver      String
+  status      String          @default("Planned")
+  eta         DateTime?
+  warehouse   Warehouse?      @relation(fields: [warehouseId], references: [id])
+  stops       DeliveryStop[]
+}
+
+model DeliveryStop {
+  id           String         @id @default(cuid())
+  tripId       String
+  orderId      String
+  franchiseId  String
+  sequence     Int
+  status       String         @default("Planned")
+  eta          DateTime?
+  deliveredAt  DateTime?
+  receiver     String?
+  otp          String?
+  signatureRef String?
+  photoRef     String?
+  notes        String?
+  trip         DispatchTrip  @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  order        Order          @relation(fields: [orderId], references: [id])
+}
+
+model Invoice {
+  id            String              @id
+  franchiseId   String
+  orderId       String              @unique
+  invoiceDate   DateTime
+  dueDate       DateTime
+  status        String              @default("Draft")
+  paymentStatus String              @default("Open")
+  subtotal      Decimal             @db.Decimal(14,2) @default(0)
+  taxTotal      Decimal             @db.Decimal(14,2) @default(0)
+  grandTotal    Decimal             @db.Decimal(14,2) @default(0)
+  version       Int                 @default(1)
+  franchise     Franchise           @relation(fields: [franchiseId], references: [id])
+  order         Order               @relation(fields: [orderId], references: [id])
+  payments      PaymentAllocation[]
+  adjustments   CreditAdjustment[]
+}
+
+model Payment {
+  id            String              @id
+  franchiseId   String
+  date          DateTime
+  method        String
+  reference     String?
+  amount        Decimal             @db.Decimal(14,2)
+  status        PaymentStatus       @default(DRAFT)
+  attachmentRef String?
+  franchise     Franchise           @relation(fields: [franchiseId], references: [id])
+  allocations   PaymentAllocation[]
+}
+
+model PaymentAllocation {
+  paymentId String
+  invoiceId String
+  amount    Decimal  @db.Decimal(14,2)
+  payment   Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  @@id([paymentId, invoiceId])
+}
+
+model CreditAdjustment {
+  id           String   @id @default(cuid())
+  invoiceId    String
+  reason       String
+  amount       Decimal  @db.Decimal(14,2)
+  taxTreatment String?
+  status       String   @default("Draft")
+  invoice      Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+}
+
+model Ticket {
+  id            String         @id
+  franchiseId   String
+  orderId       String?
+  issue         String
+  category      String
+  severity      Severity       @default(NORMAL)
+  slaDueAt      DateTime?
+  owner         String?
+  status        TicketStatus   @default(OPEN)
+  description   String?
+  internalNotes String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  franchise     Franchise      @relation(fields: [franchiseId], references: [id])
+  @@index([franchiseId, status, severity])
+}
+
+model Notification {
+  id              String      @id
+  severity        Severity
+  title           String
+  detail          String
+  module          String
+  entityId        String?
+  recipientId     String?
+  status          String      @default("New")
+  createdAt       DateTime    @default(now())
+  acknowledgedAt DateTime?
+  resolvedAt     DateTime?
+}
+
+model NotificationRule {
+  id              String      @id @default(cuid())
+  name            String      @unique
+  trigger         Json
+  severity        Severity
+  audience        Json
+  cooldownMinutes Int         @default(0)
+  escalation      Json?
+  enabled         Boolean     @default(true)
+  messageTemplate String
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
+
+model Recommendation {
+  id           String    @id
+  type         String
+  title        String
+  entity       String
+  risk         String
+  impact       String
+  freshness    DateTime
+  confidence   String
+  status       String    @default("Suggested")
+  why          String
+  evidence     Json
+  action       String
+  decisionById String?
+  decidedAt    DateTime?
+}
+
+model AuditLog {
+  id            String        @id @default(cuid())
+  action        String
+  actorId       String?
+  entity        String
+  entityId      String
+  detail        String
+  beforeState   Json?
+  afterState    Json?
+  createdAt     DateTime      @default(now())
+  actor         User?         @relation(fields: [actorId], references: [id])
+  order         Order?        @relation(fields: [orderId], references: [id])
+  orderId       String?
+  procurement   Procurement?  @relation(fields: [procurementId], references: [id])
+  procurementId String?
+  sku           SKU?          @relation(fields: [skuId], references: [id])
+  skuId         String?
+  @@index([entity, entityId, createdAt])
+}

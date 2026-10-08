@@ -1,0 +1,9 @@
+node_modules/
+.next/
+.next-design-audit/
+.env
+.env.local
+.env.*.local
+!.env.example
+*.tsbuildinfo
+storage/*
